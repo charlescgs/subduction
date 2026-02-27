@@ -606,12 +606,10 @@ fn setup_window(mtm: MainThreadMarker) {
     }))
     .expect("no suitable GPU adapter found");
 
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("subduction_wgpu"),
-            ..Default::default()
-        },
-    ))
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("subduction_wgpu"),
+        ..Default::default()
+    }))
     .expect("failed to create device");
 
     // Create surfaces for the remaining two layers.
