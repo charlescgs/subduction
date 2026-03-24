@@ -97,6 +97,70 @@ impl DCompPresenter {
         self.composition.commit()
     }
 
+    // ── Effects (delegated to CompositionManager) ──────────
+
+    /// Apply a Gaussian blur effect. `sigma` <= 0 removes the blur.
+    pub fn set_blur(&mut self, idx: u32, sigma: f32) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("set_blur: unmapped layer");
+        self.composition.set_blur(id, sigma)
+    }
+
+    /// Apply a saturation effect (0.0 = grayscale, 1.0 = identity).
+    pub fn set_saturation(&mut self, idx: u32, amount: f32) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("set_saturation: unmapped layer");
+        self.composition.set_saturation(id, amount)
+    }
+
+    /// Apply a 5x4 color matrix effect (20 floats, row-major).
+    pub fn set_color_matrix(&mut self, idx: u32, matrix: &[f32; 20]) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("set_color_matrix: unmapped layer");
+        self.composition.set_color_matrix(id, matrix)
+    }
+
+    /// Apply a brightness effect with white/black point curves.
+    pub fn set_brightness(&mut self, idx: u32, white: (f32, f32), black: (f32, f32)) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("set_brightness: unmapped layer");
+        self.composition.set_brightness(id, white, black)
+    }
+
+    /// Remove all effects from a layer.
+    pub fn clear_effects(&mut self, idx: u32) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("clear_effects: unmapped layer");
+        self.composition.clear_effects(id)
+    }
+
+    // ── Animations (delegated to CompositionManager) ─────
+
+    /// Animate opacity from `from` to `to` over `duration_s` seconds.
+    pub fn animate_opacity(&mut self, idx: u32, from: f32, to: f32, duration_s: f64, now: f64) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("animate_opacity: unmapped layer");
+        self.composition.animate_opacity(id, from, to, duration_s, now)
+    }
+
+    /// Animate offset from `from` to `to` over `duration_s` seconds.
+    pub fn animate_offset(&mut self, idx: u32, from: (f32, f32), to: (f32, f32), duration_s: f64, now: f64) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("animate_offset: unmapped layer");
+        self.composition.animate_offset(id, from, to, duration_s, now)
+    }
+
+    /// Check for completed animations. Returns the number completed.
+    pub fn tick_animations(&mut self, now: f64) -> usize {
+        self.composition.tick_animations(now)
+    }
+
+    /// Whether any animations are currently active.
+    pub fn has_active_animations(&self) -> bool {
+        self.composition.has_active_animations()
+    }
+
+    // ── Scroll offset ────────────────────────────────────
+
+    /// DWM-level scroll: shift visual content without re-rendering.
+    pub fn set_scroll_offset(&mut self, idx: u32, dx: f32, dy: f32) -> windows::core::Result<()> {
+        let id = self.mapped_id(idx).expect("set_scroll_offset: unmapped layer");
+        self.composition.set_scroll_offset(id, dx, dy)
+    }
+
     /// Ensure the maps have enough slots for the given index.
     fn ensure_slot(&mut self, idx: u32) {
         let needed = idx as usize + 1;

@@ -43,6 +43,8 @@ struct CompositionLayer {
     transform_3d: Option<IDCompositionMatrixTransform3D>,
     /// Cached rounded-rectangle clip — reused across clip updates.
     rounded_clip: Option<IDCompositionRectangleClip>,
+    /// Cached blur effect — reused across blur updates.
+    cached_blur: Option<IDCompositionGaussianBlurEffect>
 }
 
 impl std::fmt::Debug for CompositionLayer {
@@ -50,6 +52,7 @@ impl std::fmt::Debug for CompositionLayer {
         f.debug_struct("CompositionLayer")
             .field("has_effect_group", &self.effect_group.is_some())
             .field("has_transform_3d", &self.transform_3d.is_some())
+            .field("has_blur", &self.cached_blur.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -60,6 +63,34 @@ impl std::fmt::Debug for CompositionLayer {
 /// property-only visuals (no swapchain or surface backing). Applications
 /// attach GPU content by calling [`visual`](Self::visual) and then
 /// `IDCompositionVisual::SetContent`.
+/// Which property an animation targets (for completion snapping).
+#[derive(Debug, Clone)]
+pub enum AnimationProperty {
+    /// Opacity animation with target value.
+    Opacity {
+        /// Final opacity value (0.0–1.0).
+        target: f32
+    },
+    /// Offset animation with target X/Y.
+    Offset {
+        /// Final X offset in pixels.
+        target_x: f32,
+        /// Final Y offset in pixels.
+        target_y: f32
+    }
+}
+
+/// A pending DComp animation with timer-based completion tracking.
+#[derive(Debug, Clone)]
+pub struct PendingAnimation {
+    /// Layer this animation applies to.
+    pub layer_id: LayerId,
+    /// Which property is being animated.
+    pub property: AnimationProperty,
+    /// Absolute time (in seconds) when the animation completes.
+    pub end_time: f64
+}
+
 pub struct CompositionManager {
     device: IDCompositionDevice,
     #[expect(dead_code, reason = "must be kept alive for the lifetime of the composition target")]
@@ -67,6 +98,10 @@ pub struct CompositionManager {
     root_visual: IDCompositionVisual,
     layers: Vec<Option<CompositionLayer>>,
     free_list: Vec<usize>,
+    /// Lazily cached IDCompositionDevice3 for effects (Windows 10 1607+).
+    device3: Option<IDCompositionDevice3>,
+    /// Active DComp animations awaiting completion.
+    active_animations: Vec<PendingAnimation>
 }
 
 impl std::fmt::Debug for CompositionManager {
@@ -123,6 +158,8 @@ impl CompositionManager {
             root_visual,
             layers: Vec::new(),
             free_list: Vec::new(),
+            device3: None,
+            active_animations: Vec::new()
         })
     }
 
@@ -144,6 +181,7 @@ impl CompositionManager {
             effect_group: None,
             transform_3d: None,
             rounded_clip: None,
+            cached_blur: None
         });
 
         Ok(id)
@@ -163,6 +201,7 @@ impl CompositionManager {
         if is_attached {
             self.set_visible(id, parent, false)?;
         }
+        self.active_animations.retain(|a| a.layer_id != id);
         self.layers[id.0] = None;
         self.free_list.push(id.0);
         Ok(())
@@ -388,6 +427,280 @@ impl CompositionManager {
     pub fn commit(&self) -> Result<()> {
         // SAFETY: `Commit` flushes all pending composition changes.
         unsafe { self.device.Commit() }
+    }
+
+    // ── Scroll offset ───────────────────────────────────────
+
+    /// DWM-level scroll: shift the visual's content without re-rendering.
+    ///
+    /// Negates the offsets so positive (dx, dy) scrolls content up/left.
+    pub fn set_scroll_offset(&self, id: LayerId, dx: f32, dy: f32) -> Result<()> {
+        let v = &self.layer(id).visual;
+        unsafe {
+            v.SetOffsetX2(-dx)?;
+            v.SetOffsetY2(-dy)?;
+        }
+        Ok(())
+    }
+
+    // ── Effects (IDCompositionDevice3, Windows 10 1607+) ──
+
+    /// Lazily acquire IDCompositionDevice3 for effect creation.
+    fn device3(&mut self) -> Result<IDCompositionDevice3> {
+        if self.device3.is_none() {
+            self.device3 = Some(self.device.cast()?);
+        }
+        Ok(self.device3.as_ref().unwrap().clone())
+    }
+
+    /// Apply a Gaussian blur effect to a layer.
+    ///
+    /// `sigma` <= 0 removes the blur.
+    pub fn set_blur(&mut self, id: LayerId, sigma: f32) -> Result<()> {
+        let device3 = self.device3()?;
+        let layer = self.layer_mut(id);
+
+        if sigma <= 0.0 {
+            layer.cached_blur = None;
+            let visual3: IDCompositionVisual3 = layer.visual.cast()?;
+            if let Some(eg) = &layer.effect_group {
+                unsafe { visual3.SetEffect(eg)?; }
+            } else {
+                unsafe { visual3.SetEffect(None)?; }
+            }
+            return Ok(());
+        }
+
+        if layer.cached_blur.is_none() {
+            let blur = unsafe { device3.CreateGaussianBlurEffect()? };
+            layer.cached_blur = Some(blur);
+        }
+        let blur = layer.cached_blur.as_ref().unwrap();
+        unsafe { blur.SetStandardDeviation2(sigma)?; }
+
+        let visual3: IDCompositionVisual3 = layer.visual.cast()?;
+        unsafe { visual3.SetEffect(blur)?; }
+        Ok(())
+    }
+
+    /// Apply a saturation effect.
+    ///
+    /// `amount`: 0.0 = grayscale, 1.0 = identity, >1.0 = oversaturated.
+    pub fn set_saturation(&mut self, id: LayerId, amount: f32) -> Result<()> {
+        let device3 = self.device3()?;
+        let effect = unsafe { device3.CreateSaturationEffect()? };
+        unsafe { effect.SetSaturation2(amount)?; }
+
+        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
+        unsafe { visual3.SetEffect(&effect)?; }
+        Ok(())
+    }
+
+    /// Apply a 5x4 color matrix effect (20 floats, row-major).
+    pub fn set_color_matrix(&mut self, id: LayerId, matrix: &[f32; 20]) -> Result<()> {
+        let device3 = self.device3()?;
+        let effect = unsafe { device3.CreateColorMatrixEffect()? };
+        for row in 0..5 {
+            for col in 0..4 {
+                unsafe { effect.SetMatrixElement2(row, col, matrix[row as usize * 4 + col as usize])?; }
+            }
+        }
+
+        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
+        unsafe { visual3.SetEffect(&effect)?; }
+        Ok(())
+    }
+
+    /// Apply a brightness effect with white/black point curves.
+    pub fn set_brightness(
+        &mut self,
+        id: LayerId,
+        white: (f32, f32),
+        black: (f32, f32)
+    ) -> Result<()> {
+        let device3 = self.device3()?;
+        let effect = unsafe { device3.CreateBrightnessEffect()? };
+        unsafe {
+            effect.SetWhitePointX2(white.0)?;
+            effect.SetWhitePointY2(white.1)?;
+            effect.SetBlackPointX2(black.0)?;
+            effect.SetBlackPointY2(black.1)?;
+        }
+
+        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
+        unsafe { visual3.SetEffect(&effect)?; }
+        Ok(())
+    }
+
+    /// Remove all effects from a layer.
+    pub fn clear_effects(&mut self, id: LayerId) -> Result<()> {
+        let layer = self.layer_mut(id);
+        layer.cached_blur = None;
+        let visual3: IDCompositionVisual3 = layer.visual.cast()?;
+        unsafe { visual3.SetEffect(None)?; }
+        layer.effect_group = None;
+        layer.transform_3d = None;
+        Ok(())
+    }
+
+    // ── Animations (DComp-driven, zero per-frame app cost) ──
+
+    /// Animate opacity from `from` to `to` over `duration_s` seconds.
+    ///
+    /// The DWM runs the animation at compositor refresh rate. Call
+    /// [`tick_animations`](Self::tick_animations) each frame to detect completion.
+    pub fn animate_opacity(
+        &mut self,
+        id: LayerId,
+        from: f32,
+        to: f32,
+        duration_s: f64,
+        now: f64
+    ) -> Result<()> {
+        let animation = unsafe { self.device.CreateAnimation()? };
+        let slope = (to - from) / duration_s as f32;
+        unsafe {
+            animation.AddCubic(0.0, from, slope, 0.0, 0.0)?;
+            animation.End(duration_s, to)?;
+        }
+
+        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
+        unsafe { visual3.SetOpacity(&animation)?; }
+
+        self.active_animations.push(PendingAnimation {
+            layer_id: id,
+            property: AnimationProperty::Opacity { target: to },
+            end_time: now + duration_s
+        });
+        Ok(())
+    }
+
+    /// Animate offset from `(from_x, from_y)` to `(to_x, to_y)` over `duration_s`.
+    pub fn animate_offset(
+        &mut self,
+        id: LayerId,
+        from: (f32, f32),
+        to: (f32, f32),
+        duration_s: f64,
+        now: f64
+    ) -> Result<()> {
+        let anim_x = unsafe { self.device.CreateAnimation()? };
+        let anim_y = unsafe { self.device.CreateAnimation()? };
+        let slope_x = (to.0 - from.0) / duration_s as f32;
+        let slope_y = (to.1 - from.1) / duration_s as f32;
+        unsafe {
+            anim_x.AddCubic(0.0, from.0, slope_x, 0.0, 0.0)?;
+            anim_x.End(duration_s, to.0)?;
+            anim_y.AddCubic(0.0, from.1, slope_y, 0.0, 0.0)?;
+            anim_y.End(duration_s, to.1)?;
+        }
+
+        let visual = &self.layer(id).visual;
+        unsafe {
+            visual.SetOffsetX(&anim_x)?;
+            visual.SetOffsetY(&anim_y)?;
+        }
+
+        self.active_animations.push(PendingAnimation {
+            layer_id: id,
+            property: AnimationProperty::Offset { target_x: to.0, target_y: to.1 },
+            end_time: now + duration_s
+        });
+        Ok(())
+    }
+
+    /// Animate a single offset axis with linear interpolation.
+    pub fn animate_offset_axis(
+        &mut self,
+        id: LayerId,
+        is_x: bool,
+        from: f32,
+        to: f32,
+        duration_s: f64,
+        now: f64
+    ) -> Result<()> {
+        let animation = unsafe { self.device.CreateAnimation()? };
+        let slope = (to - from) / duration_s as f32;
+        unsafe {
+            animation.AddCubic(0.0, from, slope, 0.0, 0.0)?;
+            animation.End(duration_s, to)?;
+        }
+
+        let visual = &self.layer(id).visual;
+        unsafe {
+            if is_x { visual.SetOffsetX(&animation)?; }
+            else { visual.SetOffsetY(&animation)?; }
+        }
+
+        self.active_animations.push(PendingAnimation {
+            layer_id: id,
+            property: if is_x {
+                AnimationProperty::Offset { target_x: to, target_y: 0.0 }
+            } else {
+                AnimationProperty::Offset { target_x: 0.0, target_y: to }
+            },
+            end_time: now + duration_s
+        });
+        Ok(())
+    }
+
+    /// Animate a single offset axis with a cubic polynomial (for deceleration).
+    ///
+    /// `value(t) = constant + linear*t + quadratic*t^2`
+    /// At `t = t_stop`, snaps to `final_value`.
+    pub fn animate_offset_cubic(
+        &mut self,
+        id: LayerId,
+        is_x: bool,
+        constant: f32,
+        linear: f32,
+        quadratic: f32,
+        t_stop: f64,
+        final_value: f32,
+        now: f64
+    ) -> Result<()> {
+        let animation = unsafe { self.device.CreateAnimation()? };
+        unsafe {
+            animation.AddCubic(0.0, constant, linear, quadratic, 0.0)?;
+            animation.End(t_stop, final_value)?;
+        }
+
+        let visual = &self.layer(id).visual;
+        unsafe {
+            if is_x { visual.SetOffsetX(&animation)?; }
+            else { visual.SetOffsetY(&animation)?; }
+        }
+
+        self.active_animations.push(PendingAnimation {
+            layer_id: id,
+            property: if is_x {
+                AnimationProperty::Offset { target_x: final_value, target_y: 0.0 }
+            } else {
+                AnimationProperty::Offset { target_x: 0.0, target_y: final_value }
+            },
+            end_time: now + t_stop
+        });
+        Ok(())
+    }
+
+    /// Check for completed animations. Returns the number that completed.
+    ///
+    /// Call once per frame. DComp's `End()` already snaps values;
+    /// this just cleans up tracking state.
+    pub fn tick_animations(&mut self, now: f64) -> usize {
+        let before = self.active_animations.len();
+        self.active_animations.retain(|anim| now < anim.end_time);
+        before - self.active_animations.len()
+    }
+
+    /// Whether any animations are currently active.
+    pub fn has_active_animations(&self) -> bool {
+        !self.active_animations.is_empty()
+    }
+
+    /// Number of active animations.
+    pub fn animation_count(&self) -> usize {
+        self.active_animations.len()
     }
 
     // ── Accessors ──────────────────────────────────────────────

@@ -41,7 +41,7 @@ pub mod presenter;
 pub mod tick;
 mod timing;
 
-pub use composition::{CompositionManager, LayerId};
+pub use composition::{CompositionManager, LayerId, AnimationProperty, PendingAnimation};
 pub use presenter::DCompPresenter;
 pub use subduction_core::backend::Presenter;
 pub use tick::{compute_hints, make_tick, FrameEventTickSource, TickSource, WM_APP_TICK};
