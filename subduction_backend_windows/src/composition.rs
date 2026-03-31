@@ -38,6 +38,8 @@ pub struct LayerId(pub(crate) usize);
 /// Per-layer state in the composition tree.
 struct CompositionLayer {
     visual: IDCompositionVisual,
+    /// Cached `IDCompositionVisual3` — `None` if the runtime doesn't support it.
+    visual3: Option<IDCompositionVisual3>,
     /// Cached rounded-rectangle clip — reused across clip updates.
     rounded_clip: Option<IDCompositionRectangleClip>,
     // Cached effects (chained in this order by `rebuild_effect_chain`)
@@ -151,8 +153,11 @@ impl CompositionManager {
         let parent_visual = self.parent_visual(parent);
         unsafe { parent_visual.AddVisual(&visual, false, None)? };
 
+        let visual3 = visual.cast::<IDCompositionVisual3>().ok();
+
         let id = self.alloc_slot(CompositionLayer {
             visual,
+            visual3,
             rounded_clip: None,
             blur: None,
             saturation: None,
@@ -209,9 +214,14 @@ impl CompositionManager {
     // ── Opacity ────────────────────────────────────────────────
 
     /// Set a layer's opacity (0.0–1.0).
+    ///
+    /// Requires `IDCompositionVisual3`; no-op if the runtime doesn't support it.
     pub fn set_opacity(&self, id: LayerId, opacity: f32) -> Result<()> {
-        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
-        unsafe { visual3.SetOpacity2(opacity) }
+        if let Some(visual3) = &self.layer(id).visual3 {
+            unsafe { visual3.SetOpacity2(opacity) }
+        } else {
+            Ok(())
+        }
     }
 
     // ── Clips ──────────────────────────────────────────────────
@@ -462,9 +472,8 @@ impl CompositionManager {
             animation.End(duration_s, to)?;
         }
 
-        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
-        unsafe {
-            visual3.SetOpacity(&animation)?;
+        if let Some(visual3) = &self.layer(id).visual3 {
+            unsafe { visual3.SetOpacity(&animation)? };
         }
 
         self.active_animations.push(PendingAnimation {
@@ -717,7 +726,9 @@ impl CompositionManager {
 /// Only the tail of the chain is set on the visual; `DComp` walks backwards
 /// through the `SetInput` links to compose the full pipeline.
 fn rebuild_effect_chain(layer: &CompositionLayer) -> Result<()> {
-    let visual3: IDCompositionVisual3 = layer.visual.cast()?;
+    let Some(visual3) = &layer.visual3 else {
+        return Ok(());
+    };
 
     // Collect active effects in chain order.
     let chain: [Option<IDCompositionFilterEffect>; 4] = [
