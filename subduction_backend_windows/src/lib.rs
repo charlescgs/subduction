@@ -118,6 +118,33 @@ mod tests {
     }
 
     #[test]
+    fn make_tick_with_refresh_and_prev() {
+        let prev = HostTime(1_000_000);
+        let tick = make_tick(16_666_667, 5, Some(prev));
+        assert_eq!(tick.frame_index, 5);
+        assert_eq!(tick.prev_actual_present, Some(prev));
+        assert!(tick.predicted_present.is_some());
+        assert!(tick.refresh_interval.is_some());
+        assert_eq!(tick.confidence, TimingConfidence::Estimated);
+    }
+
+    #[test]
+    fn make_tick_zero_refresh() {
+        let tick = make_tick(0, 1, None);
+        assert_eq!(tick.predicted_present, None);
+        assert_eq!(tick.refresh_interval, None);
+        assert_eq!(tick.prev_actual_present, None);
+    }
+
+    #[test]
+    fn make_tick_first_frame_predicts_from_now() {
+        let tick = make_tick(16_666_667, 0, None);
+        // First frame with no prev: predicted_present = now + interval
+        let predicted = tick.predicted_present.unwrap();
+        assert!(predicted.ticks() > tick.now.ticks());
+    }
+
+    #[test]
     fn compute_hints_without_prediction() {
         let tick = FrameTick {
             now: HostTime(1_000_000),
