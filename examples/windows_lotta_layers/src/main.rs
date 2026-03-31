@@ -387,7 +387,7 @@ fn on_tick() {
     s.recorder.on_frame_summary(&summary.finish());
 
     // Store pending feedback for next tick.
-    s.prev_present_time = Some(tick.now);
+    s.prev_present_time = s.presenter.last_present_time().ok();
     s.pending_feedback = Some(PendingFeedback {
         hints,
         build_start: plan_start,

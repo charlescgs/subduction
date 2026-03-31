@@ -20,6 +20,8 @@
 //!       └── Layer B
 //! ```
 
+use subduction_core::time::HostTime;
+
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::DirectComposition::*;
@@ -795,6 +797,30 @@ impl CompositionManager {
     /// device-owned objects.
     pub fn device(&self) -> &IDCompositionDevice {
         &self.device
+    }
+
+    /// Returns DWM composition frame statistics.
+    ///
+    /// Provides the last composition time, current composition rate,
+    /// and next estimated frame time — all in QPC ticks.
+    pub fn frame_statistics(&self) -> Result<DCOMPOSITION_FRAME_STATISTICS> {
+        // SAFETY: COM call to query DWM composition timing.
+        unsafe { self.device.GetFrameStatistics() }
+    }
+
+    /// Returns the QPC time of the last DWM composition frame as a
+    /// [`HostTime`].
+    ///
+    /// This is the actual present time of the most recently composed
+    /// frame, suitable for feeding into
+    /// [`PendingFeedback::resolve()`](subduction_core::timing::PendingFeedback::resolve).
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "QPC values from DWM are always non-negative"
+    )]
+    pub fn last_present_time(&self) -> Result<HostTime> {
+        let stats = self.frame_statistics()?;
+        Ok(HostTime(stats.lastFrameTime as u64))
     }
 
     /// Number of live (non-destroyed) layers.

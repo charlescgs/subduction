@@ -8,14 +8,17 @@
 //!
 //! [`LayerStore`]: subduction_core::layer::LayerStore
 
-use subduction_core::backend::Presenter;
 use std::collections::HashMap;
 
+use subduction_core::backend::Presenter;
 use subduction_core::layer::{ClipShape, FrameChanges, LayerStore, SurfaceId};
+use subduction_core::time::HostTime;
 
 use crate::composition::{CompositionManager, LayerId};
 
-use windows::Win32::Graphics::DirectComposition::IDCompositionVisual;
+use windows::Win32::Graphics::DirectComposition::{
+    DCOMPOSITION_FRAME_STATISTICS, IDCompositionVisual,
+};
 
 /// `DirectComposition` presenter for subduction.
 ///
@@ -105,6 +108,18 @@ impl DCompPresenter {
     /// Commit all pending `DirectComposition` changes atomically.
     pub fn commit(&self) -> windows::core::Result<()> {
         self.composition.commit()
+    }
+
+    /// Returns DWM composition frame statistics.
+    pub fn frame_statistics(
+        &self,
+    ) -> windows::core::Result<DCOMPOSITION_FRAME_STATISTICS> {
+        self.composition.frame_statistics()
+    }
+
+    /// Returns the actual present time of the last DWM composition frame.
+    pub fn last_present_time(&self) -> windows::core::Result<HostTime> {
+        self.composition.last_present_time()
     }
 
     // ── Effects (delegated to CompositionManager) ──────────

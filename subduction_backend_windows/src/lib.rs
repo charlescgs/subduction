@@ -43,6 +43,7 @@ pub mod tick;
 mod timing;
 
 pub use composition::{AnimationProperty, CompositionManager, LayerId, PendingAnimation};
+pub use windows::Win32::Graphics::DirectComposition::DCOMPOSITION_FRAME_STATISTICS;
 pub use presenter::DCompPresenter;
 pub use surface::DCompSurfacePresenter;
 pub use subduction_core::backend::Presenter;
