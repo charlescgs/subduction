@@ -145,9 +145,7 @@ impl FrameEventTickSource {
     fn thread_main(hwnd: HWND, frame_event: HANDLE, running: &AtomicBool) {
         while running.load(Ordering::Relaxed) {
             let result = unsafe { WaitForSingleObject(frame_event, 32) };
-            if result != WAIT_OBJECT_0
-                && unsafe { DwmFlush() }.is_err()
-            {
+            if result != WAIT_OBJECT_0 && unsafe { DwmFlush() }.is_err() {
                 std::thread::sleep(Duration::from_millis(16));
             }
             unsafe {

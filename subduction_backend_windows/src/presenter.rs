@@ -99,9 +99,7 @@ impl DCompPresenter {
     }
 
     /// Returns DWM composition frame statistics.
-    pub fn frame_statistics(
-        &self,
-    ) -> windows::core::Result<DCOMPOSITION_FRAME_STATISTICS> {
+    pub fn frame_statistics(&self) -> windows::core::Result<DCOMPOSITION_FRAME_STATISTICS> {
         self.composition.frame_statistics()
     }
 

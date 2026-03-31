@@ -21,10 +21,7 @@ fn cached_frequency() -> i64 {
 
 /// Current monotonic time as a [`HostTime`] (raw QPC ticks).
 #[must_use]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "QPC values are always non-negative"
-)]
+#[expect(clippy::cast_sign_loss, reason = "QPC values are always non-negative")]
 pub(crate) fn now() -> HostTime {
     let mut count = 0_i64;
     unsafe { QueryPerformanceCounter(&mut count).unwrap() };

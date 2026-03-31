@@ -13,7 +13,9 @@ use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::DirectComposition::{
     IDCompositionDevice, IDCompositionSurface, IDCompositionVisual,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM,
+};
 use windows::Win32::Graphics::Dxgi::IDXGISurface;
 use windows_core::Interface;
 
@@ -90,8 +92,7 @@ impl DCompSurfacePresenter {
     ) -> windows::core::Result<(IDXGISurface, POINT)> {
         let mut offset = POINT::default();
         let raw_rect = update_rect.map(|r| r as *const RECT);
-        let dxgi_surface: IDXGISurface =
-            unsafe { self.surface.BeginDraw(raw_rect, &mut offset)? };
+        let dxgi_surface: IDXGISurface = unsafe { self.surface.BeginDraw(raw_rect, &mut offset)? };
         Ok((dxgi_surface, offset))
     }
 

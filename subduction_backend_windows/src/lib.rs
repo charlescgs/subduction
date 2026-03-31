@@ -43,11 +43,11 @@ pub mod tick;
 mod timing;
 
 pub use composition::{AnimationProperty, CompositionManager, LayerId, PendingAnimation};
-pub use windows::Win32::Graphics::DirectComposition::DCOMPOSITION_FRAME_STATISTICS;
 pub use presenter::DCompPresenter;
-pub use surface::DCompSurfacePresenter;
 pub use subduction_core::backend::Presenter;
+pub use surface::DCompSurfacePresenter;
 pub use tick::{FrameEventTickSource, TickSource, WM_APP_TICK, compute_hints, make_tick};
+pub use windows::Win32::Graphics::DirectComposition::DCOMPOSITION_FRAME_STATISTICS;
 
 use subduction_core::time::{HostTime, Timebase};
 use subduction_core::timing::{FrameTick, PresentHints};
