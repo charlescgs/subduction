@@ -264,40 +264,14 @@ impl DCompPresenter {
     }
 }
 
-/// Convert subduction's `Transform3d` (f64 column-major 4×4) to the
-/// f32 format expected by [`CompositionManager::set_transform_3d`].
+/// Convert `Transform3d` (f64) to f32 4×4 for [`CompositionManager::set_transform_3d`].
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f64 → f32 truncation is intentional for DirectComposition"
+)]
 fn transform_to_f32(t: &subduction_core::transform::Transform3d) -> [[f32; 4]; 4] {
     let cols = t.to_cols_array_2d();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Transform values are intentionally truncated from f64 to f32 for DirectComposition"
-    )]
-    [
-        [
-            cols[0][0] as f32,
-            cols[0][1] as f32,
-            cols[0][2] as f32,
-            cols[0][3] as f32,
-        ],
-        [
-            cols[1][0] as f32,
-            cols[1][1] as f32,
-            cols[1][2] as f32,
-            cols[1][3] as f32,
-        ],
-        [
-            cols[2][0] as f32,
-            cols[2][1] as f32,
-            cols[2][2] as f32,
-            cols[2][3] as f32,
-        ],
-        [
-            cols[3][0] as f32,
-            cols[3][1] as f32,
-            cols[3][2] as f32,
-            cols[3][3] as f32,
-        ],
-    ]
+    core::array::from_fn(|col| core::array::from_fn(|row| cols[col][row] as f32))
 }
 
 /// Apply a [`ClipShape`] to a layer via the composition manager.
