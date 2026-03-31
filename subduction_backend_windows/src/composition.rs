@@ -40,8 +40,11 @@ struct CompositionLayer {
     visual: IDCompositionVisual,
     /// Cached rounded-rectangle clip — reused across clip updates.
     rounded_clip: Option<IDCompositionRectangleClip>,
-    /// Cached blur effect — reused across blur updates.
-    cached_blur: Option<IDCompositionGaussianBlurEffect>,
+    // Cached effects (chained in this order by `rebuild_effect_chain`)
+    blur: Option<IDCompositionGaussianBlurEffect>,
+    saturation: Option<IDCompositionSaturationEffect>,
+    color_matrix: Option<IDCompositionColorMatrixEffect>,
+    brightness: Option<IDCompositionBrightnessEffect>,
 }
 
 /// Which property an animation targets (for completion snapping).
@@ -151,7 +154,10 @@ impl CompositionManager {
         let id = self.alloc_slot(CompositionLayer {
             visual,
             rounded_clip: None,
-            cached_blur: None,
+            blur: None,
+            saturation: None,
+            color_matrix: None,
+            brightness: None,
         });
 
         Ok(id)
@@ -352,49 +358,43 @@ impl CompositionManager {
         let layer = self.layer_mut(id);
 
         if sigma <= 0.0 {
-            layer.cached_blur = None;
-            let visual3: IDCompositionVisual3 = layer.visual.cast()?;
-            unsafe {
-                visual3.SetEffect(None)?;
+            layer.blur = None;
+        } else {
+            if layer.blur.is_none() {
+                layer.blur = Some(unsafe { device3.CreateGaussianBlurEffect()? });
             }
-            return Ok(());
+            unsafe { layer.blur.as_ref().unwrap().SetStandardDeviation2(sigma)? };
         }
 
-        if layer.cached_blur.is_none() {
-            let blur = unsafe { device3.CreateGaussianBlurEffect()? };
-            layer.cached_blur = Some(blur);
-        }
-        let blur = layer.cached_blur.as_ref().unwrap();
-        unsafe {
-            blur.SetStandardDeviation2(sigma)?;
-        }
-
-        let visual3: IDCompositionVisual3 = layer.visual.cast()?;
-        unsafe {
-            visual3.SetEffect(blur)?;
-        }
-        Ok(())
+        rebuild_effect_chain(layer)
     }
 
-    /// Apply a saturation effect (0.0 = grayscale, 1.0 = identity).
+    /// Apply a saturation effect (`amount` == 1.0 is identity; removes it).
     pub fn set_saturation(&mut self, id: LayerId, amount: f32) -> Result<()> {
         let device3 = self.device3()?;
-        let effect = unsafe { device3.CreateSaturationEffect()? };
-        unsafe {
-            effect.SetSaturation2(amount)?;
+        let layer = self.layer_mut(id);
+
+        if amount == 1.0 {
+            layer.saturation = None;
+        } else {
+            if layer.saturation.is_none() {
+                layer.saturation = Some(unsafe { device3.CreateSaturationEffect()? });
+            }
+            unsafe { layer.saturation.as_ref().unwrap().SetSaturation2(amount)? };
         }
 
-        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
-        unsafe {
-            visual3.SetEffect(&effect)?;
-        }
-        Ok(())
+        rebuild_effect_chain(layer)
     }
 
     /// Apply a 5×4 color matrix effect (row-major).
     pub fn set_color_matrix(&mut self, id: LayerId, matrix: &[f32; 20]) -> Result<()> {
         let device3 = self.device3()?;
-        let effect = unsafe { device3.CreateColorMatrixEffect()? };
+        let layer = self.layer_mut(id);
+
+        if layer.color_matrix.is_none() {
+            layer.color_matrix = Some(unsafe { device3.CreateColorMatrixEffect()? });
+        }
+        let effect = layer.color_matrix.as_ref().unwrap();
         for row in 0..5 {
             for col in 0..4 {
                 unsafe {
@@ -403,11 +403,7 @@ impl CompositionManager {
             }
         }
 
-        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
-        unsafe {
-            visual3.SetEffect(&effect)?;
-        }
-        Ok(())
+        rebuild_effect_chain(layer)
     }
 
     /// Apply a brightness effect with white/black point curves.
@@ -418,7 +414,12 @@ impl CompositionManager {
         black: (f32, f32),
     ) -> Result<()> {
         let device3 = self.device3()?;
-        let effect = unsafe { device3.CreateBrightnessEffect()? };
+        let layer = self.layer_mut(id);
+
+        if layer.brightness.is_none() {
+            layer.brightness = Some(unsafe { device3.CreateBrightnessEffect()? });
+        }
+        let effect = layer.brightness.as_ref().unwrap();
         unsafe {
             effect.SetWhitePointX2(white.0)?;
             effect.SetWhitePointY2(white.1)?;
@@ -426,22 +427,17 @@ impl CompositionManager {
             effect.SetBlackPointY2(black.1)?;
         }
 
-        let visual3: IDCompositionVisual3 = self.layer(id).visual.cast()?;
-        unsafe {
-            visual3.SetEffect(&effect)?;
-        }
-        Ok(())
+        rebuild_effect_chain(layer)
     }
 
     /// Remove all effects from a layer.
     pub fn clear_effects(&mut self, id: LayerId) -> Result<()> {
         let layer = self.layer_mut(id);
-        layer.cached_blur = None;
-        let visual3: IDCompositionVisual3 = layer.visual.cast()?;
-        unsafe {
-            visual3.SetEffect(None)?;
-        }
-        Ok(())
+        layer.blur = None;
+        layer.saturation = None;
+        layer.color_matrix = None;
+        layer.brightness = None;
+        rebuild_effect_chain(layer)
     }
 
     // ── Animations (DComp-driven, zero per-frame app cost) ──
@@ -712,4 +708,47 @@ impl CompositionManager {
             .as_mut()
             .expect("access to destroyed layer")
     }
+}
+
+/// Rebuild the effect chain on a layer's visual.
+///
+/// Active effects are chained in a fixed order (blur → saturation →
+/// color\_matrix → brightness) via [`IDCompositionFilterEffect::SetInput`].
+/// Only the tail of the chain is set on the visual; `DComp` walks backwards
+/// through the `SetInput` links to compose the full pipeline.
+fn rebuild_effect_chain(layer: &CompositionLayer) -> Result<()> {
+    let visual3: IDCompositionVisual3 = layer.visual.cast()?;
+
+    // Collect active effects in chain order.
+    let chain: [Option<IDCompositionFilterEffect>; 4] = [
+        layer.blur.as_ref().map(|e| e.cast()).transpose()?,
+        layer.saturation.as_ref().map(|e| e.cast()).transpose()?,
+        layer.color_matrix.as_ref().map(|e| e.cast()).transpose()?,
+        layer.brightness.as_ref().map(|e| e.cast()).transpose()?,
+    ];
+    let mut active = [None, None, None, None];
+    let mut len = 0;
+    for effect in chain.into_iter().flatten() {
+        active[len] = Some(effect);
+        len += 1;
+    }
+
+    if len == 0 {
+        unsafe { visual3.SetEffect(None)? };
+        return Ok(());
+    }
+
+    // First effect reads from the visual's own content.
+    unsafe { active[0].as_ref().unwrap().SetInput(0, None, 0)?; }
+
+    // Each subsequent effect reads from the previous one's output.
+    for i in 1..len {
+        unsafe {
+            active[i].as_ref().unwrap().SetInput(0, active[i - 1].as_ref().unwrap(), 0)?;
+        };
+    }
+
+    // Set the tail of the chain on the visual.
+    unsafe { visual3.SetEffect(active[len - 1].as_ref().unwrap())?; }
+    Ok(())
 }
